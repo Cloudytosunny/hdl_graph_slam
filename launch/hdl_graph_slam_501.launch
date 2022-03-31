@@ -11,7 +11,7 @@
   <arg name="map_frame_id" default="map" />
   <arg name="lidar_odom_frame_id" default="odom" />
 
-  <!-- optional arguments -->
+  <!-- optional arguments 可选择的参数 -->  
   <arg name="enable_robot_odometry_init_guess" default="false" />
   <arg name="robot_odom_frame_id" default="robot_odom" />
 

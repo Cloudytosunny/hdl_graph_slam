@@ -26,7 +26,7 @@ namespace hdl_graph_slam {
 
 class PrefilteringNodelet : public nodelet::Nodelet {
 public:
-  typedef pcl::PointXYZI PointT;
+  typedef pcl::PointXYZI PointT;//intensity 强度
 
   PrefilteringNodelet() {}
   virtual ~PrefilteringNodelet() {}
@@ -37,7 +37,7 @@ public:
 
     initialize_params();
 
-    if(private_nh.param<bool>("deskewing", false)) {
+    if(private_nh.param<bool>("deskewing", false)) {//是否去畸变？纠偏
       imu_sub = nh.subscribe("/imu/data", 1, &PrefilteringNodelet::imu_callback, this);
     }
 
@@ -111,14 +111,14 @@ private:
 
     src_cloud = deskewing(src_cloud);
 
-    // if base_link_frame is defined, transform the input cloud to the frame
+    // if base_link_frame is defined, transform the input cloud to the frame 如果定义了基本链接框架，则将输入云转换为框架
     if(!base_link_frame.empty()) {
       if(!tf_listener.canTransform(base_link_frame, src_cloud->header.frame_id, ros::Time(0))) {
         std::cerr << "failed to find transform between " << base_link_frame << " and " << src_cloud->header.frame_id << std::endl;
       }
 
       tf::StampedTransform transform;
-      tf_listener.waitForTransform(base_link_frame, src_cloud->header.frame_id, ros::Time(0), ros::Duration(2.0));
+      tf_listener.waitForTransform(base_link_frame, src_cloud->header.frame_id, ros::Time(0), ros::Duration(2.0));  // 阻塞等待，直到指定的某两个frame连通，注意参数
       tf_listener.lookupTransform(base_link_frame, src_cloud->header.frame_id, ros::Time(0), transform);
 
       pcl::PointCloud<PointT>::Ptr transformed(new pcl::PointCloud<PointT>());
@@ -164,7 +164,7 @@ private:
   pcl::PointCloud<PointT>::ConstPtr distance_filter(const pcl::PointCloud<PointT>::ConstPtr& cloud) const {
     pcl::PointCloud<PointT>::Ptr filtered(new pcl::PointCloud<PointT>());
     filtered->reserve(cloud->size());
-
+//遍历原始点云，若某一点对应的欧式距离大于near、小于far则复制给filtered
     std::copy_if(cloud->begin(), cloud->end(), std::back_inserter(filtered->points), [&](const PointT& p) {
       double d = p.getVector3fMap().norm();
       return d > distance_near_thresh && d < distance_far_thresh;
@@ -184,14 +184,14 @@ private:
     if(imu_queue.empty()) {
       return cloud;
     }
-
+//颜色对点序列中的点编号进行编码
     // the color encodes the point number in the point sequence
     if(colored_pub.getNumSubscribers()) {
       pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored(new pcl::PointCloud<pcl::PointXYZRGB>());
       colored->header = cloud->header;
-      colored->is_dense = cloud->is_dense;
-      colored->width = cloud->width;
-      colored->height = cloud->height;
+      colored->is_dense = cloud->is_dense;//点云密集型
+      colored->width = cloud->width;//点云宽度
+      colored->height = cloud->height;  //点云高度
       colored->resize(cloud->size());
 
       for(int i = 0; i < cloud->size(); i++) {
@@ -204,7 +204,7 @@ private:
       colored_pub.publish(*colored);
     }
 
-    sensor_msgs::ImuConstPtr imu_msg = imu_queue.front();
+    sensor_msgs::ImuConstPtr imu_msg = imu_queue.front();//起始元素的引用
 
     auto loc = imu_queue.begin();
     for(; loc != imu_queue.end(); loc++) {
@@ -214,10 +214,10 @@ private:
       }
     }
 
-    imu_queue.erase(imu_queue.begin(), loc);
+    imu_queue.erase(imu_queue.begin(), loc);//删除里面从开始后的loc个数据
 
     Eigen::Vector3f ang_v(imu_msg->angular_velocity.x, imu_msg->angular_velocity.y, imu_msg->angular_velocity.z);
-    ang_v *= -1;
+    ang_v *= -1;//取相反数?
 
     pcl::PointCloud<PointT>::Ptr deskewed(new pcl::PointCloud<PointT>());
     deskewed->header = cloud->header;
@@ -226,14 +226,14 @@ private:
     deskewed->height = cloud->height;
     deskewed->resize(cloud->size());
 
-    double scan_period = private_nh.param<double>("scan_period", 0.1);
+    double scan_period = private_nh.param<double>("scan_period", 0.1);//扫描周期
     for(int i = 0; i < cloud->size(); i++) {
       const auto& pt = cloud->at(i);
 
-      // TODO: transform IMU data into the LIDAR frame
+      // TODO: transform IMU data into the LIDAR frame  将IMU数据转换到激光雷达框架中
       double delta_t = scan_period * static_cast<double>(i) / cloud->size();
-      Eigen::Quaternionf delta_q(1, delta_t / 2.0 * ang_v[0], delta_t / 2.0 * ang_v[1], delta_t / 2.0 * ang_v[2]);
-      Eigen::Vector3f pt_ = delta_q.inverse() * pt.getVector3fMap();
+      Eigen::Quaternionf delta_q(1, delta_t / 2.0 * ang_v[0], delta_t / 2.0 * ang_v[1], delta_t / 2.0 * ang_v[2]);//四元数
+      Eigen::Vector3f pt_ = delta_q.inverse() * pt.getVector3fMap();//逆矩阵
 
       deskewed->at(i) = cloud->at(i);
       deskewed->at(i).getVector3fMap() = pt_;

@@ -33,7 +33,7 @@ namespace hdl_graph_slam {
 class ScanMatchingOdometryNodelet : public nodelet::Nodelet {
 public:
   typedef pcl::PointXYZI PointT;
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW  //为了解决使用Eigen的对象，可能出现堆栈对齐的问题
 
   ScanMatchingOdometryNodelet() {}
   virtual ~ScanMatchingOdometryNodelet() {}
@@ -68,13 +68,13 @@ private:
     odom_frame_id = pnh.param<std::string>("odom_frame_id", "odom");
     robot_odom_frame_id = pnh.param<std::string>("robot_odom_frame_id", "robot_odom");
 
-    // The minimum tranlational distance and rotation angle between keyframes.
-    // If this value is zero, frames are always compared with the previous frame
+    // The minimum tranlational distance and rotation angle between keyframes.关键帧之间的最小平移距离和旋转角度。
+    // If this value is zero, frames are always compared with the previous frame 如果该值为零，则帧始终与前一帧进行比较
     keyframe_delta_trans = pnh.param<double>("keyframe_delta_trans", 0.25);
     keyframe_delta_angle = pnh.param<double>("keyframe_delta_angle", 0.15);
     keyframe_delta_time = pnh.param<double>("keyframe_delta_time", 1.0);
 
-    // Registration validation by thresholding
+    // Registration validation by thresholding  基于阈值的注册验证
     transform_thresholding = pnh.param<bool>("transform_thresholding", false);
     max_acceptable_trans = pnh.param<double>("max_acceptable_trans", 1.0);
     max_acceptable_angle = pnh.param<double>("max_acceptable_angle", 1.0);
@@ -156,27 +156,28 @@ private:
   }
 
   /**
-   * @brief estimate the relative pose between an input cloud and a keyframe cloud
+   * @brief estimate the relative pose between an input cloud and a keyframe cloud  估计输入云和关键帧云之间的相对姿势
    * @param stamp  the timestamp of the input cloud
    * @param cloud  the input cloud
-   * @return the relative pose between the input cloud and the keyframe cloud
+   * @return the relative pose between the input cloud and the keyframe cloud  输入云和关键帧云之间的相对姿势
    */
   Eigen::Matrix4f matching(const ros::Time& stamp, const pcl::PointCloud<PointT>::ConstPtr& cloud) {
+    //还没有关键帧，说明它是第一帧，则直接把它设置成关键帧，并初始化位姿为单位阵，直接返回
     if(!keyframe) {
       prev_time = ros::Time();
-      prev_trans.setIdentity();
+      prev_trans.setIdentity();   //单位矩阵
       keyframe_pose.setIdentity();
       keyframe_stamp = stamp;
       keyframe = downsample(cloud);
-      registration->setInputTarget(keyframe);
+      registration->setInputTarget(keyframe);  //提供目标点云数据集（必须包含XYZ数据！），用于计算对应距离。
       return Eigen::Matrix4f::Identity();
     }
-
+  //当前点云给registration
     auto filtered = downsample(cloud);
-    registration->setInputSource(filtered);
-
+    registration->setInputSource(filtered);  //pcl库里面的函数   计算对应距离
+//执行匹配
     std::string msf_source;
-    Eigen::Isometry3f msf_delta = Eigen::Isometry3f::Identity();
+    Eigen::Isometry3f msf_delta = Eigen::Isometry3f::Identity();  //得到一个4x4的单位矩阵
 
     if(private_nh.param<bool>("enable_imu_frontend", false)) {
       if(msf_pose && msf_pose->header.stamp > keyframe_stamp && msf_pose_after_update && msf_pose_after_update->header.stamp > keyframe_stamp) {
@@ -206,20 +207,23 @@ private:
     }
 
     pcl::PointCloud<PointT>::Ptr aligned(new pcl::PointCloud<PointT>());
-    registration->align(*aligned, prev_trans * msf_delta.matrix());
-
+    registration->align(*aligned, prev_trans * msf_delta.matrix());  //估计转换并将转换后的源（输入）作为输出返回。  输出：得到的输入转换点云数据集（精准估计）
+// 匹配结束、则返回它相对于关键帧位姿？    prev_trans : 基于关键帧的上一次估计变换                                                                输入 ：转换的初始粗略估计
     publish_scan_matching_status(stamp, cloud->header.frame_id, aligned, msf_source, msf_delta);
 
-    if(!registration->hasConverged()) {
+    if(!registration->hasConverged()) {    //是否收敛
       NODELET_INFO_STREAM("scan matching has not converged!!");
       NODELET_INFO_STREAM("ignore this frame(" << stamp << ")");
-      return keyframe_pose * prev_trans;
+      return keyframe_pose * prev_trans;  //为什么返回上一帧
     }
 
-    Eigen::Matrix4f trans = registration->getFinalTransformation();
-    Eigen::Matrix4f odom = keyframe_pose * trans;
+    Eigen::Matrix4f trans = registration->getFinalTransformation();  //通过配准方法得到最终的变换矩阵。
+    Eigen::Matrix4f odom = keyframe_pose * trans;  //应该是  世界坐标
 
-    if(transform_thresholding) {
+
+    //这段代码的主要功能是判断当前匹配的相对位姿是否过大，载体不可能短时间内有这么大的运动
+    //所以如果出现了，就说明这一帧匹配可能不正常,则直接舍弃
+    if(transform_thresholding) {                               //转换阈值
       Eigen::Matrix4f delta = prev_trans.inverse() * trans;
       double dx = delta.block<3, 1>(0, 3).norm();
       double da = std::acos(Eigen::Quaternionf(delta.block<3, 3>(0, 0)).w());
@@ -237,6 +241,9 @@ private:
     auto keyframe_trans = matrix2transform(stamp, keyframe_pose, odom_frame_id, "keyframe");
     keyframe_broadcaster.sendTransform(keyframe_trans);
 
+
+    //判断这一帧相对于关键帧的位置或角度是否比较大了
+    //如果比较大，则需要更新关键帧，并把新的关键帧的点云设置成Target
     double delta_trans = trans.block<3, 1>(0, 3).norm();
     double delta_angle = std::acos(Eigen::Quaternionf(trans.block<3, 3>(0, 0)).w());
     double delta_time = (stamp - keyframe_stamp).toSec();
@@ -261,7 +268,7 @@ private:
   }
 
   /**
-   * @brief publish odometry
+   * @brief publish odometry   包含位置及速度
    * @param stamp  timestamp
    * @param pose   odometry pose to be published
    */
@@ -302,8 +309,8 @@ private:
     ScanMatchingStatus status;
     status.header.frame_id = frame_id;
     status.header.stamp = stamp;
-    status.has_converged = registration->hasConverged();
-    status.matching_error = registration->getFitnessScore();
+    status.has_converged = registration->hasConverged();  //在最后一次对齐运行后返回收敛状态。
+    status.matching_error = registration->getFitnessScore();    //获得欧几里得适应度分数
 
     const double max_correspondence_dist = 0.5;
 
@@ -365,12 +372,12 @@ private:
   double max_acceptable_trans;  //
   double max_acceptable_angle;
 
-  // odometry calculation
+  // odometry calculation  里程计计算   带有时间标签和参考坐标的估计位姿
   geometry_msgs::PoseWithCovarianceStampedConstPtr msf_pose;
   geometry_msgs::PoseWithCovarianceStampedConstPtr msf_pose_after_update;
 
   ros::Time prev_time;
-  Eigen::Matrix4f prev_trans;                  // previous estimated transform from keyframe
+  Eigen::Matrix4f prev_trans;                  // previous estimated transform from keyframe 基于关键帧的上一次估计变换
   Eigen::Matrix4f keyframe_pose;               // keyframe pose
   ros::Time keyframe_stamp;                    // keyframe time
   pcl::PointCloud<PointT>::ConstPtr keyframe;  // keyframe point cloud

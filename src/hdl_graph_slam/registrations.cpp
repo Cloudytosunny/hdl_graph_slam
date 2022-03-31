@@ -63,7 +63,7 @@ pcl::Registration<pcl::PointXYZI, pcl::PointXYZI>::Ptr select_registration_metho
     icp->setUseReciprocalCorrespondences(pnh.param<bool>("reg_use_reciprocal_correspondences", false));
     return icp;
   } else if(registration_method.find("GICP") != std::string::npos) {
-    if(registration_method.find("OMP") == std::string::npos) {
+    if(registration_method.find("OMP") == std::string::npos)  {                                            //说明没有找到“OMP”
       std::cout << "registration: GICP" << std::endl;
       pcl::GeneralizedIterativeClosestPoint<PointT, PointT>::Ptr gicp(new pcl::GeneralizedIterativeClosestPoint<PointT, PointT>());
       gicp->setTransformationEpsilon(pnh.param<double>("reg_transformation_epsilon", 0.01));

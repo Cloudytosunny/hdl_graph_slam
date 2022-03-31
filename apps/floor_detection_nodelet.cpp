@@ -54,13 +54,14 @@ private:
    * @brief initialize parameters
    */
   void initialize_params() {
-    tilt_deg = private_nh.param<double>("tilt_deg", 0.0);                           // approximate sensor tilt angle [deg]
-    sensor_height = private_nh.param<double>("sensor_height", 2.0);                 // approximate sensor height [m]
-    height_clip_range = private_nh.param<double>("height_clip_range", 1.0);         // points with heights in [sensor_height - height_clip_range, sensor_height + height_clip_range] will be used for floor detection
-    floor_pts_thresh = private_nh.param<int>("floor_pts_thresh", 512);              // minimum number of support points of RANSAC to accept a detected floor plane
-    floor_normal_thresh = private_nh.param<double>("floor_normal_thresh", 10.0);    // verticality check thresold for the detected floor plane [deg]
-    use_normal_filtering = private_nh.param<bool>("use_normal_filtering", true);    // if true, points with "non-"vertical normals will be filtered before RANSAC
-    normal_filter_thresh = private_nh.param<double>("normal_filter_thresh", 20.0);  // "non-"verticality check threshold [deg]
+    tilt_deg = private_nh.param<double>("tilt_deg", 0.0);                           // approximate sensor tilt angle [deg]   近似传感器倾斜角 [度]
+    sensor_height = private_nh.param<double>("sensor_height", 2.0);                 // approximate sensor height [m]   近似传感器高度 [m]  
+    height_clip_range = private_nh.param<double>("height_clip_range", 1.0);         // points with heights in [sensor_height - height_clip_range, sensor_height + height_clip_range] will be used for floor detection  
+                                                                                                                                                                      //高度在 [sensor_height - height_clip_range, sensor_height + height_clip_range] 的点将用于地板检测
+    floor_pts_thresh = private_nh.param<int>("floor_pts_thresh", 512);              // minimum number of support points of RANSAC to accept a detected floor plane  RANSAC 接受检测到的地板平面的最小支持点数
+    floor_normal_thresh = private_nh.param<double>("floor_normal_thresh", 10.0);    // verticality check thresold for the detected floor plane [deg]   检测到的地板平面的垂直度检查阈值 [度]
+    use_normal_filtering = private_nh.param<bool>("use_normal_filtering", true);    // if true, points with "non-"vertical normals will be filtered before RANSAC   如果为真，具有“非”垂直法线的点将在 RANSAC 之前被过滤
+    normal_filter_thresh = private_nh.param<double>("normal_filter_thresh", 20.0);  // "non-"verticality check threshold [deg]     "非"垂直性检查阈值 [度]
 
     points_topic = private_nh.param<std::string>("points_topic", "/velodyne_points");
   }
@@ -80,7 +81,7 @@ private:
     // floor detection
     boost::optional<Eigen::Vector4f> floor = detect(cloud);
 
-    // publish the detected floor coefficients
+    // publish the detected floor coefficients   发布检测到的地板系数
     hdl_graph_slam::FloorCoeffs coeffs;
     coeffs.header = cloud_msg->header;
     if(floor) {
@@ -108,13 +109,14 @@ private:
    * @return detected floor plane coefficients
    */
   boost::optional<Eigen::Vector4f> detect(const pcl::PointCloud<PointT>::Ptr& cloud) const {
-    // compensate the tilt rotation
+    // compensate the tilt rotation    补偿倾斜旋转
     Eigen::Matrix4f tilt_matrix = Eigen::Matrix4f::Identity();
     tilt_matrix.topLeftCorner(3, 3) = Eigen::AngleAxisf(tilt_deg * M_PI / 180.0f, Eigen::Vector3f::UnitY()).toRotationMatrix();
 
-    // filtering before RANSAC (height and normal filtering)
+    // filtering before RANSAC (height and normal filtering)  RANSAC 之前的过滤（高度和正常过滤）
     pcl::PointCloud<PointT>::Ptr filtered(new pcl::PointCloud<PointT>);
     pcl::transformPointCloud(*cloud, *filtered, tilt_matrix);
+    //  把指定点云区域一侧的点全部去掉，所以执行两次滤波就可以了，两次分别把地面高度上面和下面的点全部去掉，就只剩下地面点云了。
     filtered = plane_clip(filtered, Eigen::Vector4f(0.0f, 0.0f, 1.0f, sensor_height + height_clip_range), false);
     filtered = plane_clip(filtered, Eigen::Vector4f(0.0f, 0.0f, 1.0f, sensor_height - height_clip_range), true);
 
@@ -129,7 +131,7 @@ private:
       floor_filtered_pub.publish(*filtered);
     }
 
-    // too few points for RANSAC
+    // too few points for RANSAC   点太少 则直接退出
     if(filtered->size() < floor_pts_thresh) {
       return boost::none;
     }
@@ -137,13 +139,13 @@ private:
     // RANSAC
     pcl::SampleConsensusModelPlane<PointT>::Ptr model_p(new pcl::SampleConsensusModelPlane<PointT>(filtered));
     pcl::RandomSampleConsensus<PointT> ransac(model_p);
-    ransac.setDistanceThreshold(0.1);
+    ransac.setDistanceThreshold(0.1);  //设置距离阈值
     ransac.computeModel();
 
     pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
     ransac.getInliers(inliers->indices);
 
-    // too few inliers
+    // too few inliers  内点过少，也退出啊
     if(inliers->indices.size() < floor_pts_thresh) {
       return boost::none;
     }
@@ -155,12 +157,14 @@ private:
     ransac.getModelCoefficients(coeffs);
 
     double dot = coeffs.head<3>().dot(reference.head<3>());
+    // 法向量不合理，退出
     if(std::abs(dot) < std::cos(floor_normal_thresh * M_PI / 180.0)) {
       // the normal is not vertical
       return boost::none;
     }
 
     // make the normal upward
+    // 法向量颠倒个方向
     if(coeffs.head<3>().dot(Eigen::Vector3f::UnitZ()) < 0.0f) {
       coeffs *= -1.0f;
     }
@@ -186,6 +190,7 @@ private:
    * @param negative
    * @return
    */
+  //  根据高度参数把地面分割出来
   pcl::PointCloud<PointT>::Ptr plane_clip(const pcl::PointCloud<PointT>::Ptr& src_cloud, const Eigen::Vector4f& plane, bool negative) const {
     pcl::PlaneClipper3D<PointT> clipper(plane);
     pcl::PointIndices::Ptr indices(new pcl::PointIndices);
@@ -204,10 +209,11 @@ private:
   }
 
   /**
-   * @brief filter points with non-vertical normals
+   * @brief filter points with non-vertical normals   没有垂直
    * @param cloud  input cloud
    * @return filtered cloud
    */
+  //  把地面点云中，去掉法向量和地面实际法向量差别较大的点
   pcl::PointCloud<PointT>::Ptr normal_filtering(const pcl::PointCloud<PointT>::Ptr& cloud) const {
     pcl::NormalEstimation<PointT, pcl::Normal> ne;
     ne.setInputCloud(cloud);
@@ -218,11 +224,11 @@ private:
     pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
     ne.setKSearch(10);
     ne.setViewPoint(0.0f, 0.0f, sensor_height);
-    ne.compute(*normals);
+    ne.compute(*normals);  //计算地面点云的法向量
 
     pcl::PointCloud<PointT>::Ptr filtered(new pcl::PointCloud<PointT>);
     filtered->reserve(cloud->size());
-
+// 这段是核心，遍历所有的点，法向量满足要求时这个点才被选取
     for(int i = 0; i < cloud->size(); i++) {
       float dot = normals->at(i).getNormalVector3fMap().normalized().dot(Eigen::Vector3f::UnitZ());
       if(std::abs(dot) > std::cos(normal_filter_thresh * M_PI / 180.0)) {

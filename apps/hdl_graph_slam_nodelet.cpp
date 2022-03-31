@@ -71,7 +71,7 @@ public:
 
   virtual void onInit() {
     nh = getNodeHandle();
-    mt_nh = getMTNodeHandle();
+    mt_nh = getMTNodeHandle();  //多线程句柄
     private_nh = getPrivateNodeHandle();
 
     // init parameters
@@ -113,6 +113,10 @@ public:
     sync->registerCallback(boost::bind(&HdlGraphSlamNodelet::cloud_callback, this, _1, _2));
     imu_sub = nh.subscribe("/gpsimu_driver/imu_data", 1024, &HdlGraphSlamNodelet::imu_callback, this);
     floor_sub = nh.subscribe("/floor_detection/floor_coeffs", 1024, &HdlGraphSlamNodelet::floor_coeffs_callback, this);
+//sync是一个最多支持九个传感器的时间同步器，当odom_sub和cloud_sub的Header里的时间戳一致，则触发cloud_callback，
+//bind里的_1和_2是占位符。给定graph更新间隔；给定map_cloud更新间隔；
+
+
 
     if(private_nh.param<bool>("enable_gps", true)) {
       gps_sub = mt_nh.subscribe("/gps/geopoint", 1024, &HdlGraphSlamNodelet::gps_callback, this);
@@ -142,6 +146,7 @@ private:
    * @param odom_msg
    * @param cloud_msg
    */
+  // 对cloud 进行处理，筛选合适的关键帧存入key_frame_queue
   void cloud_callback(const nav_msgs::OdometryConstPtr& odom_msg, const sensor_msgs::PointCloud2::ConstPtr& cloud_msg) {
     const ros::Time& stamp = cloud_msg->header.stamp;
     Eigen::Isometry3d odom = odom2isometry(odom_msg);
@@ -152,7 +157,7 @@ private:
       base_frame_id = cloud_msg->header.frame_id;
     }
 
-    if(!keyframe_updater->update(odom)) {
+    if(!keyframe_updater->update(odom)) {  
       std::lock_guard<std::mutex> lock(keyframe_queue_mutex);
       if(keyframe_queue.empty()) {
         std_msgs::Header read_until;
@@ -166,7 +171,7 @@ private:
       return;
     }
 
-    double accum_d = keyframe_updater->get_accum_distance();
+    double accum_d = keyframe_updater->get_accum_distance();  //位移
     KeyFrame::Ptr keyframe(new KeyFrame(stamp, odom, accum_d, cloud));
 
     std::lock_guard<std::mutex> lock(keyframe_queue_mutex);
@@ -177,6 +182,7 @@ private:
    * @brief this method adds all the keyframes in #keyframe_queue to the pose graph (odometry edges)
    * @return if true, at least one keyframe was added to the pose graph
    */
+  // 向graph_slam中添加node 和 keyframes 之间的edge
   bool flush_keyframe_queue() {
     std::lock_guard<std::mutex> lock(keyframe_queue_mutex);
 
@@ -242,6 +248,7 @@ private:
     return true;
   }
 
+// 接受卫星导航信息 ，将其转换成gps信息，并调用gps_callback将gps存入gps_queue
   void nmea_callback(const nmea_msgs::SentenceConstPtr& nmea_msg) {
     GPRMC grmc = nmea_parser->parse(nmea_msg->sentence);
 
@@ -281,6 +288,7 @@ private:
    * @brief
    * @return
    */
+  // 找到与每个关键帧时间戳最接近的gps信息，将信息转换到utm中，然后向graph里加入先验xyz边
   bool flush_gps_queue() {
     std::lock_guard<std::mutex> lock(gps_queue_mutex);
 
@@ -350,7 +358,7 @@ private:
     gps_queue.erase(gps_queue.begin(), remove_loc);
     return updated;
   }
-
+//将imu信息存入imu_queue
   void imu_callback(const sensor_msgs::ImuPtr& imu_msg) {
     if(!enable_imu_orientation && !enable_imu_acceleration) {
       return;
@@ -360,7 +368,7 @@ private:
     imu_msg->header.stamp += ros::Duration(imu_time_offset);
     imu_queue.push_back(imu_msg);
   }
-
+//找到与每个关键帧时间戳最接近的imu信息，向graph中添加先验的quat_edge和vec_edge,即倾角和加速度信息
   bool flush_imu_queue() {
     std::lock_guard<std::mutex> lock(imu_queue_mutex);
     if(keyframes.empty() || imu_queue.empty() || base_frame_id.empty()) {
@@ -448,6 +456,7 @@ private:
    * @brief received floor coefficients are added to #floor_coeffs_queue
    * @param floor_coeffs_msg
    */
+  // 将地面系数存入floor_coeffs_queue
   void floor_coeffs_callback(const hdl_graph_slam::FloorCoeffsConstPtr& floor_coeffs_msg) {
     if(floor_coeffs_msg->coeffs.empty()) {
       return;
@@ -461,6 +470,7 @@ private:
    * @brief this methods associates floor coefficients messages with registered keyframes, and then adds the associated coeffs to the pose graph
    * @return if true, at least one floor plane edge is added to the pose graph
    */
+  // 处理地板检测得到的系数，向graph中添加plane_edge
   bool flush_floor_queue() {
     std::lock_guard<std::mutex> lock(floor_coeffs_queue_mutex);
 
@@ -508,6 +518,7 @@ private:
    * @brief generate map point cloud and publish it
    * @param event
    */
+  // 每十秒触发一次，进行建图，读取optimization 中产生 的 snapshot ，然后转成cloud_msg发布出去
   void map_points_publish_timer_callback(const ros::WallTimerEvent& event) {
     if(!map_points_pub.getNumSubscribers() || !graph_updated) {
       return;
@@ -537,6 +548,12 @@ private:
    * @brief this methods adds all the data in the queues to the pose graph, and then optimizes the pose graph
    * @param event
    */
+  //十秒触发一次，进行后端优化
+  //进入后先调用上面的四个flush函数，如果返回的值均为false，则直接终止。若任一为true，则调用detect进行闭环检测，
+  //并在graph加入相应边，这里的边与keyframe之间的边是一样的，因此会使用同样的调用函数add_se3_edge。
+  //优化以后，生成snapshot，供建图函数使用，并分别调用odom2map_pub和markers_pub（create_marker_array也在此处调用。）
+  //因此这个函数就是每十秒一次，将所有需要的约束均加入graph，利用g2o进行优化
+
   void optimization_timer_callback(const ros::WallTimerEvent& event) {
     std::lock_guard<std::mutex> lock(main_thread_mutex);
 
@@ -808,6 +825,7 @@ private:
    * @param res
    * @return
    */
+  // 用于转储程序内部数据 (point clouds, floor coeffs, odoms, and pose graph) 到指定目录。参数为 destination.
   bool dump_service(hdl_graph_slam::DumpGraphRequest& req, hdl_graph_slam::DumpGraphResponse& res) {
     std::lock_guard<std::mutex> lock(main_thread_mutex);
 
@@ -856,6 +874,7 @@ private:
    * @param res
    * @return
    */
+  //用于存储生成的地图到指定目录。参数为 utm resolution destination.
   bool save_map_service(hdl_graph_slam::SaveMapRequest& req, hdl_graph_slam::SaveMapResponse& res) {
     std::vector<KeyFrameSnapshot::Ptr> snapshot;
 
