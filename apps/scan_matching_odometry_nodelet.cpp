@@ -280,7 +280,7 @@ private:
     // broadcast the transform over tf
     odom_broadcaster.sendTransform(odom_trans);
 
-    // publish the transform
+    // publish the transform  一个转换
     nav_msgs::Odometry odom;
     odom.header.stamp = stamp;
     odom.header.frame_id = odom_frame_id;

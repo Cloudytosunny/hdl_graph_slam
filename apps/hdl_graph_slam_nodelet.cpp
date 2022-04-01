@@ -97,7 +97,7 @@ public:
     gps_edge_stddev_xy = private_nh.param<double>("gps_edge_stddev_xy", 10000.0);
     gps_edge_stddev_z = private_nh.param<double>("gps_edge_stddev_z", 10.0);
     floor_edge_stddev = private_nh.param<double>("floor_edge_stddev", 10.0);
-
+ 
     imu_time_offset = private_nh.param<double>("imu_time_offset", 0.0);
     enable_imu_orientation = private_nh.param<bool>("enable_imu_orientation", false);
     enable_imu_acceleration = private_nh.param<bool>("enable_imu_acceleration", false);
@@ -161,7 +161,7 @@ private:
       std::lock_guard<std::mutex> lock(keyframe_queue_mutex);
       if(keyframe_queue.empty()) {
         std_msgs::Header read_until;
-        read_until.stamp = stamp + ros::Duration(10, 0);
+        read_until.stamp = stamp + ros::Duration(10, 0);  //时间加上10s
         read_until.frame_id = points_topic;
         read_until_pub.publish(read_until);
         read_until.frame_id = "/filtered_points";
